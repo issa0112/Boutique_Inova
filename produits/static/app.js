@@ -1,5 +1,6 @@
 document.addEventListener("DOMContentLoaded", () => {
   const sidebar = document.getElementById("sidebar");
+  const sidebarBackdrop = document.getElementById("sidebarBackdrop");
   const mobileToggle = document.getElementById("sidebarToggle");
   const collapseToggle = document.getElementById("sidebarCollapse");
   const themeToggle = document.getElementById("themeToggle");
@@ -7,6 +8,17 @@ document.addEventListener("DOMContentLoaded", () => {
   const themeKey = "uiTheme";
 
   const isMobile = () => window.innerWidth <= 980;
+  const closeMobileSidebar = () => {
+    if (!sidebar) return;
+    sidebar.classList.remove("open");
+    document.body.classList.remove("sidebar-open");
+  };
+  const toggleMobileSidebar = () => {
+    if (!sidebar) return;
+    const open = !sidebar.classList.contains("open");
+    sidebar.classList.toggle("open", open);
+    document.body.classList.toggle("sidebar-open", open);
+  };
   const applyCollapsed = (collapsed) => {
     document.body.classList.toggle("sidebar-collapsed", collapsed);
   };
@@ -36,8 +48,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (mobileToggle && sidebar) {
     mobileToggle.addEventListener("click", () => {
-      sidebar.classList.toggle("open");
+      toggleMobileSidebar();
     });
+  }
+
+  if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener("click", closeMobileSidebar);
   }
 
   if (!isMobile()) {
@@ -63,6 +79,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (isMobile()) {
       applyCollapsed(false);
     } else {
+      closeMobileSidebar();
       const saved = localStorage.getItem(collapseKey);
       applyCollapsed(saved === "1");
     }
@@ -74,5 +91,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (link.getAttribute("href") === path) {
       link.classList.add("active");
     }
+    link.addEventListener("click", () => {
+      if (isMobile()) closeMobileSidebar();
+    });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMobileSidebar();
   });
 });
