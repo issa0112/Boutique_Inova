@@ -7,8 +7,10 @@
 
 <div class="grid grid-3 stat-grid">
   <div class="card stat-card">
-    <div class="muted">Chiffre d'affaires total</div>
-    <div class="stat-value">{{ total_ventes }} FCFA</div>
+    <div class="muted">Gain net encaissé</div>
+    <div class="stat-value">{{ total_ventes_net }} FCFA</div>
+    <div class="muted">Encaissé brut: {{ total_ventes }} FCFA</div>
+    <div class="muted">Impayés en attente: {{ total_impayes }} FCFA</div>
   </div>
   <div class="card stat-card">
     <div class="muted">Produits en stock bas</div>
@@ -49,7 +51,7 @@
     <div class="stat-value">{{ ticket_moyen }} FCFA</div>
   </div>
   <div class="card stat-card">
-    <div class="muted">Commissions cumulées</div>
+    <div class="muted">Commissions à reverser</div>
     <div class="stat-value">{{ total_commissions }} FCFA</div>
   </div>
 </div>

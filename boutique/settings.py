@@ -14,7 +14,7 @@ SECRET_KEY = os.getenv(
     "DJANGO_SECRET_KEY",
     "django-insecure-m&_(h2u1$z$70e2w-m)%^8==g2cb)eqt4f))!49h0nzn(pnhi&",
 )
-DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() in ("1", "true", "yes", "on")
+DEBUG = os.getenv("DJANGO_DEBUG", "True").lower() in ("1", "true", "yes", "on")
 
 ALLOWED_HOSTS = [
     h.strip()
@@ -130,7 +130,7 @@ LOGIN_URL = "/connexion/"
 
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-    SECURE_SSL_REDIRECT = os.getenv("DJANGO_SECURE_SSL_REDIRECT", "True").lower() in (
+    SECURE_SSL_REDIRECT = os.getenv("DJANGO_SECURE_SSL_REDIRECT", "False").lower() in (
         "1",
         "true",
         "yes",

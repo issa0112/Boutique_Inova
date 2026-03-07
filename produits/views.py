@@ -65,6 +65,26 @@ def _create_stock_movement(produit, type_mouvement, quantite, stock_avant, stock
         vente=vente,
     )
 
+def _apply_sale_stock_output(produit, quantite, user=None, vente=None, note="Vente"):
+    if quantite <= 0:
+        raise ValueError("Quantité de vente invalide.")
+    stock_avant = produit.quantite
+    if quantite > stock_avant:
+        raise ValueError(f"Stock insuffisant pour {produit.nom}")
+    produit.quantite = stock_avant - quantite
+    produit.save(update_fields=["quantite"])
+    _create_stock_movement(
+        produit=produit,
+        type_mouvement="sortie",
+        quantite=quantite,
+        stock_avant=stock_avant,
+        stock_apres=produit.quantite,
+        user=user,
+        note=note,
+        vente=vente,
+    )
+    _ensure_stock_alert(produit)
+
 
 def _csv_response(filename, header, rows):
     response = HttpResponse(content_type="text/csv; charset=utf-8")
@@ -124,6 +144,21 @@ def _recalc_panier(panier):
     }
 
 
+def _render_panier_response(panier, error_message=""):
+    totals = _recalc_panier(panier)
+    html = render_to_string("boutique/panier_content.html", {
+        "panier": panier,
+        "total_general": totals["total_after_line"],
+        "subtotal": totals["subtotal"],
+        "remises_lignes": totals["total_remises"],
+        "marge_totale": totals["total_marge"],
+    })
+    payload = {"html": html}
+    if error_message:
+        payload["error"] = error_message
+    return JsonResponse(payload)
+
+
 # -----------------------------
 # Dashboard
 # -----------------------------
@@ -132,15 +167,23 @@ def dashboard(request):
     produits = Produit.objects.all()
     ventes = Vente.objects.order_by("-date_vente")[:10]
     alertes = Alerte.objects.filter(lue=False)
-    total_ventes = Vente.objects.aggregate(total=Sum("total")).get("total") or Decimal("0.00")
+    ventes_qs = Vente.objects.all()
+    ventes_payees_qs = ventes_qs.filter(statut_paiement="paye")
+    ventes_impayees_qs = ventes_qs.filter(statut_paiement="impaye")
+    total_ventes = ventes_payees_qs.aggregate(total=Sum("total")).get("total") or Decimal("0.00")
+    total_impayes = ventes_impayees_qs.aggregate(total=Sum("total")).get("total") or Decimal("0.00")
     stock_bas = Produit.objects.filter(stock_min__gt=0, quantite__lte=F("stock_min")).count()
     total_produits = Produit.objects.count()
     total_clients = Client.objects.count()
     total_personnel = Personnel.objects.count()
-    total_ventes_count = Vente.objects.count()
+    total_ventes_count = ventes_qs.count()
+    total_ventes_payees_count = ventes_payees_qs.count()
     total_articles_vendus = LigneVente.objects.aggregate(qte=Sum("quantite")).get("qte") or 0
-    ticket_moyen = total_ventes / total_ventes_count if total_ventes_count else Decimal("0.00")
-    total_commissions = Vente.objects.aggregate(total=Sum("commission")).get("total") or Decimal("0.00")
+    ticket_moyen = total_ventes / total_ventes_payees_count if total_ventes_payees_count else Decimal("0.00")
+    total_commissions = ventes_payees_qs.aggregate(total=Sum("commission")).get("total") or Decimal("0.00")
+    total_ventes_net = total_ventes - total_commissions
+    if total_ventes_net < 0:
+        total_ventes_net = Decimal("0.00")
 
     ca_expr = ExpressionWrapper(F("quantite") * F("prix_unitaire"), output_field=DecimalField(max_digits=12, decimal_places=2))
     top_produits = (
@@ -153,6 +196,8 @@ def dashboard(request):
         "ventes": ventes,
         "alertes": alertes,
         "total_ventes": total_ventes,
+        "total_ventes_net": total_ventes_net,
+        "total_impayes": total_impayes,
         "stock_bas": stock_bas,
         "total_produits": total_produits,
         "total_clients": total_clients,
@@ -339,14 +384,10 @@ def ventes(request):
                 marge_disponible = totals["total_marge"]
 
                 for produit_id, item in panier.items():
-                    produit = Produit.objects.get(id=produit_id)
+                    produit = Produit.objects.select_for_update().get(id=produit_id)
                     quantite = int(item["quantite"])
                     if quantite <= 0:
                         continue
-                    if quantite > produit.quantite:
-                        raise ValueError(f"Stock insuffisant pour {produit.nom}")
-
-                    stock_avant = produit.quantite
                     prix_unitaire = Decimal(str(item.get("prix") or produit.prix))
                     remise_type = item.get("remise_type") or ""
                     remise_value = Decimal(str(item.get("remise_value") or 0))
@@ -360,19 +401,7 @@ def ventes(request):
                         remise_value=remise_value,
                         total_ligne=total_ligne,
                     )
-                    produit.quantite -= quantite
-                    produit.save()
-                    _create_stock_movement(
-                        produit=produit,
-                        type_mouvement="sortie",
-                        quantite=quantite,
-                        stock_avant=stock_avant,
-                        stock_apres=produit.quantite,
-                        user=user,
-                        note="Vente",
-                        vente=vente,
-                    )
-                    _ensure_stock_alert(produit)
+                    _apply_sale_stock_output(produit, quantite, user=user, vente=vente, note="Vente")
                 # Appliquer remise globale si fournie
                 discount_type = request.POST.get("discount_type") or ""
                 discount_value = Decimal(request.POST.get("discount_value") or "0")
@@ -465,11 +494,25 @@ def ajouter_panier(request):
     if request.method == "POST":
         data = json.loads(request.body)
         produit_id = str(data.get("produit_id"))
-
-        produit = Produit.objects.get(id=produit_id)
         panier = request.session.get("panier", {})
+        try:
+            produit = Produit.objects.only("id", "nom", "prix", "quantite").get(id=produit_id)
+        except Produit.DoesNotExist:
+            return _render_panier_response(panier, "Produit introuvable.")
+
+        if produit.quantite <= 0:
+            panier.pop(produit_id, None)
+            request.session["panier"] = panier
+            request.session.modified = True
+            return _render_panier_response(panier, f"{produit.nom} est en rupture de stock.")
 
         if produit_id in panier:
+            quantite_actuelle = int(panier[produit_id].get("quantite") or 0)
+            if quantite_actuelle >= produit.quantite:
+                return _render_panier_response(
+                    panier,
+                    f"Stock insuffisant pour {produit.nom}. Maximum disponible: {produit.quantite}.",
+                )
             panier[produit_id]["quantite"] += 1
         else:
             panier[produit_id] = {
@@ -481,19 +524,9 @@ def ajouter_panier(request):
                 "remise_value": 0,
             }
 
-        totals = _recalc_panier(panier)
-
         request.session["panier"] = panier
         request.session.modified = True
-
-        html = render_to_string("boutique/panier_content.html", {
-            "panier": panier,
-            "total_general": totals["total_after_line"],
-            "subtotal": totals["subtotal"],
-            "remises_lignes": totals["total_remises"],
-            "marge_totale": totals["total_marge"],
-        })
-        return JsonResponse({"html": html})
+        return _render_panier_response(panier)
 
 
 def retirer_panier(request):
@@ -542,29 +575,36 @@ def modifier_quantite(request):
     if request.method == "POST":
         data = json.loads(request.body)
         produit_id = str(data.get("produit_id"))
-        quantite = int(data.get("quantite", 1))
+        try:
+            quantite = int(data.get("quantite", 1))
+        except (TypeError, ValueError):
+            quantite = 1
 
         panier = request.session.get("panier", {})
+        error_message = ""
 
         if produit_id in panier:
             if quantite > 0:
-                panier[produit_id]["quantite"] = quantite
+                try:
+                    produit = Produit.objects.only("id", "nom", "quantite").get(id=produit_id)
+                except Produit.DoesNotExist:
+                    del panier[produit_id]
+                    error_message = "Produit introuvable. Ligne retirée du panier."
+                else:
+                    if produit.quantite <= 0:
+                        del panier[produit_id]
+                        error_message = f"{produit.nom} est en rupture de stock."
+                    elif quantite > produit.quantite:
+                        panier[produit_id]["quantite"] = produit.quantite
+                        error_message = f"Quantité ajustée au stock disponible pour {produit.nom}: {produit.quantite}."
+                    else:
+                        panier[produit_id]["quantite"] = quantite
             else:
                 del panier[produit_id]
 
-        totals = _recalc_panier(panier)
-
         request.session["panier"] = panier
         request.session.modified = True
-
-        html = render_to_string("boutique/panier_content.html", {
-            "panier": panier,
-            "total_general": totals["total_after_line"],
-            "subtotal": totals["subtotal"],
-            "remises_lignes": totals["total_remises"],
-            "marge_totale": totals["total_marge"],
-        })
-        return JsonResponse({"html": html})
+        return _render_panier_response(panier, error_message)
 
 
 def supprimer_du_panier(request):
@@ -658,11 +698,25 @@ def ajouter_panier_proforma(request):
     if request.method == "POST":
         data = json.loads(request.body)
         produit_id = str(data.get("produit_id"))
-
-        produit = Produit.objects.get(id=produit_id)
         panier = request.session.get("panier_proforma", {})
+        try:
+            produit = Produit.objects.only("id", "nom", "prix", "quantite").get(id=produit_id)
+        except Produit.DoesNotExist:
+            return _render_panier_response(panier, "Produit introuvable.")
+
+        if produit.quantite <= 0:
+            panier.pop(produit_id, None)
+            request.session["panier_proforma"] = panier
+            request.session.modified = True
+            return _render_panier_response(panier, f"{produit.nom} est en rupture de stock.")
 
         if produit_id in panier:
+            quantite_actuelle = int(panier[produit_id].get("quantite") or 0)
+            if quantite_actuelle >= produit.quantite:
+                return _render_panier_response(
+                    panier,
+                    f"Stock insuffisant pour {produit.nom}. Maximum disponible: {produit.quantite}.",
+                )
             panier[produit_id]["quantite"] += 1
         else:
             panier[produit_id] = {
@@ -674,19 +728,9 @@ def ajouter_panier_proforma(request):
                 "remise_value": 0,
             }
 
-        totals = _recalc_panier(panier)
-
         request.session["panier_proforma"] = panier
         request.session.modified = True
-
-        html = render_to_string("boutique/panier_content.html", {
-            "panier": panier,
-            "total_general": totals["total_after_line"],
-            "subtotal": totals["subtotal"],
-            "remises_lignes": totals["total_remises"],
-            "marge_totale": totals["total_marge"],
-        })
-        return JsonResponse({"html": html})
+        return _render_panier_response(panier)
 
 
 def retirer_panier_proforma(request):
@@ -735,29 +779,36 @@ def modifier_quantite_proforma(request):
     if request.method == "POST":
         data = json.loads(request.body)
         produit_id = str(data.get("produit_id"))
-        quantite = int(data.get("quantite", 1))
+        try:
+            quantite = int(data.get("quantite", 1))
+        except (TypeError, ValueError):
+            quantite = 1
 
         panier = request.session.get("panier_proforma", {})
+        error_message = ""
 
         if produit_id in panier:
             if quantite > 0:
-                panier[produit_id]["quantite"] = quantite
+                try:
+                    produit = Produit.objects.only("id", "nom", "quantite").get(id=produit_id)
+                except Produit.DoesNotExist:
+                    del panier[produit_id]
+                    error_message = "Produit introuvable. Ligne retirée du panier."
+                else:
+                    if produit.quantite <= 0:
+                        del panier[produit_id]
+                        error_message = f"{produit.nom} est en rupture de stock."
+                    elif quantite > produit.quantite:
+                        panier[produit_id]["quantite"] = produit.quantite
+                        error_message = f"Quantité ajustée au stock disponible pour {produit.nom}: {produit.quantite}."
+                    else:
+                        panier[produit_id]["quantite"] = quantite
             else:
                 del panier[produit_id]
 
-        totals = _recalc_panier(panier)
-
         request.session["panier_proforma"] = panier
         request.session.modified = True
-
-        html = render_to_string("boutique/panier_content.html", {
-            "panier": panier,
-            "total_general": totals["total_after_line"],
-            "subtotal": totals["subtotal"],
-            "remises_lignes": totals["total_remises"],
-            "marge_totale": totals["total_marge"],
-        })
-        return JsonResponse({"html": html})
+        return _render_panier_response(panier, error_message)
 
 
 def supprimer_du_panier_proforma(request):
@@ -1963,7 +2014,12 @@ def factures(request):
         pass
 
     total_factures = ventes_qs.aggregate(total=Sum("total")).get("total") or Decimal("0.00")
-    total_commissions = ventes_qs.aggregate(total=Sum("commission")).get("total") or Decimal("0.00")
+    total_encaisse = ventes_qs.filter(statut_paiement="paye").aggregate(total=Sum("total")).get("total") or Decimal("0.00")
+    total_impaye = ventes_qs.filter(statut_paiement="impaye").aggregate(total=Sum("total")).get("total") or Decimal("0.00")
+    total_commissions = ventes_qs.filter(statut_paiement="paye").aggregate(total=Sum("commission")).get("total") or Decimal("0.00")
+    total_encaisse_net = total_encaisse - total_commissions
+    if total_encaisse_net < 0:
+        total_encaisse_net = Decimal("0.00")
     resultats_count = ventes_qs.count()
     ventes = ventes_qs[:300]
     clients = Client.objects.order_by("nom")
@@ -1972,6 +2028,9 @@ def factures(request):
         "ventes": ventes,
         "clients": clients,
         "total_factures": total_factures,
+        "total_encaisse": total_encaisse,
+        "total_encaisse_net": total_encaisse_net,
+        "total_impaye": total_impaye,
         "total_commissions": total_commissions,
         "resultats_count": resultats_count,
         "q": q,
@@ -2568,21 +2627,13 @@ def proforma_convertir(request, proforma_id):
                     remise_value=ligne.remise_value,
                     total_ligne=ligne.total_ligne,
                 )
-
-                stock_avant = produit.quantite
-                produit.quantite -= quantite
-                produit.save(update_fields=["quantite"])
-                _create_stock_movement(
-                    produit=produit,
-                    type_mouvement="sortie",
-                    quantite=quantite,
-                    stock_avant=stock_avant,
-                    stock_apres=produit.quantite,
+                _apply_sale_stock_output(
+                    produit,
+                    quantite,
                     user=user,
-                    note=f"Conversion proforma #{proforma.id}",
                     vente=vente,
+                    note=f"Conversion proforma #{proforma.id}",
                 )
-                _ensure_stock_alert(produit)
 
             proforma.statut = "acceptee"
             proforma.vente_convertie = vente

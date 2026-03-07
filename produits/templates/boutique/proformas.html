@@ -226,12 +226,17 @@ async function postData(url,data){
       },
       body:JSON.stringify(data)
     });
+    const r=await res.json();
     if(!res.ok){
-      alert("Impossible de mettre a jour le panier proforma.");
+      alert(r.error || "Impossible de mettre a jour le panier proforma.");
       return;
     }
-    const r=await res.json();
-    document.getElementById("panierContent").innerHTML=r.html;
+    if(r.html){
+      document.getElementById("panierContent").innerHTML=r.html;
+    }
+    if(r.error){
+      alert(r.error);
+    }
     applyDiscount();
   }catch(err){
     alert("Erreur reseau.");
