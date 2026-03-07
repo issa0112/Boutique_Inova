@@ -6,53 +6,63 @@
 <h2 class="page-title">Aperçu</h2>
 
 <div class="grid grid-3 stat-grid">
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Gain net encaissé</div>
     <div class="stat-value">{{ total_ventes_net }} FCFA</div>
     <div class="muted">Encaissé brut: {{ total_ventes }} FCFA</div>
     <div class="muted">Impayés en attente: {{ total_impayes }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="good" data-chart-points="{{ spark_gain_net }}"></div>
   </div>
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Produits en stock bas</div>
     <div class="stat-value">{{ stock_bas }}</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="bad" data-chart-points="{{ spark_stock_bas }}"></div>
   </div>
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Alertes non lues</div>
     <div class="stat-value">{{ alertes|length }}</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="bad" data-chart-points="{{ spark_alertes }}"></div>
   </div>
 </div>
 
 <div class="grid grid-3 stat-grid">
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Total produits</div>
     <div class="stat-value">{{ total_produits }}</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="neutral" data-chart-points="{{ spark_produits }}"></div>
   </div>
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Total clients</div>
     <div class="stat-value">{{ total_clients }}</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="neutral" data-chart-points="{{ spark_clients }}"></div>
   </div>
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Total personnel</div>
     <div class="stat-value">{{ total_personnel }}</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="neutral" data-chart-points="{{ spark_personnel }}"></div>
   </div>
 </div>
 
 <div class="grid grid-3 stat-grid">
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Nombre de ventes</div>
     <div class="stat-value">{{ total_ventes_count }}</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="neutral" data-chart-points="{{ spark_ventes }}"></div>
   </div>
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Articles vendus</div>
     <div class="stat-value">{{ total_articles_vendus }}</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="neutral" data-chart-points="{{ spark_articles }}"></div>
   </div>
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Ticket moyen</div>
     <div class="stat-value">{{ ticket_moyen }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="good" data-chart-points="{{ spark_ticket }}"></div>
   </div>
-  <div class="card stat-card">
+  <div class="card stat-card metric-card">
     <div class="muted">Commissions à reverser</div>
     <div class="stat-value">{{ total_commissions }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="bad" data-chart-points="{{ spark_commissions }}"></div>
   </div>
 </div>
 

@@ -528,6 +528,59 @@ body.theme-dark .btn-outline {
   gap: 6px;
 }
 
+.metric-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.metric-sparkline {
+  width: 100%;
+  height: 64px;
+  margin-top: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: linear-gradient(180deg, rgba(241, 245, 255, 0.76) 0%, rgba(231, 242, 255, 0.35) 100%);
+  padding: 4px;
+}
+
+body.theme-dark .metric-sparkline {
+  background: linear-gradient(180deg, rgba(25, 35, 56, 0.82) 0%, rgba(19, 29, 46, 0.55) 100%);
+  border-color: rgba(96, 130, 180, 0.26);
+}
+
+.sparkline {
+  width: 100%;
+  height: 100%;
+}
+
+.sparkline-area {
+  fill: rgba(14, 116, 227, 0.16);
+}
+
+.sparkline-line {
+  fill: none;
+  stroke: #0f6fd8;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sparkline-good .sparkline-area {
+  fill: rgba(22, 163, 74, 0.16);
+}
+
+.sparkline-good .sparkline-line {
+  stroke: #15803d;
+}
+
+.sparkline-bad .sparkline-area {
+  fill: rgba(220, 38, 38, 0.16);
+}
+
+.sparkline-bad .sparkline-line {
+  stroke: #b91c1c;
+}
+
 .stat-value {
   font-size: 24px;
   font-weight: 700;

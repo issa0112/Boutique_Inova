@@ -159,6 +159,20 @@ def _render_panier_response(panier, error_message=""):
     return JsonResponse(payload)
 
 
+def _series_to_csv(values):
+    cleaned = []
+    for value in values:
+        try:
+            cleaned.append(round(float(value), 2))
+        except (TypeError, ValueError):
+            cleaned.append(0.0)
+    if not cleaned:
+        cleaned = [0.0, 0.0]
+    if len(cleaned) == 1:
+        cleaned.append(cleaned[0])
+    return ",".join(str(v) for v in cleaned)
+
+
 # -----------------------------
 # Dashboard
 # -----------------------------
@@ -191,6 +205,92 @@ def dashboard(request):
         .annotate(qte=Sum("quantite"), ca=Sum(ca_expr))
         .order_by("-ca")[:5]
     )
+    today = timezone.localdate()
+    trend_days = 10
+    start_date = today - timedelta(days=trend_days - 1)
+    days = [start_date + timedelta(days=i) for i in range(trend_days)]
+
+    ventes_trend_rows = (
+        Vente.objects.filter(date_vente__date__gte=start_date, date_vente__date__lte=today)
+        .annotate(jour=TruncDate("date_vente"))
+        .values("jour")
+        .annotate(
+            total_count=Count("id"),
+            paid_count=Count("id", filter=Q(statut_paiement="paye")),
+            paid_total=Sum("total", filter=Q(statut_paiement="paye")),
+            impaye_total=Sum("total", filter=Q(statut_paiement="impaye")),
+            commission_total=Sum("commission", filter=Q(statut_paiement="paye")),
+            clients_count=Count("client", filter=Q(client__isnull=False), distinct=True),
+        )
+        .order_by("jour")
+    )
+    ventes_map = {row["jour"]: row for row in ventes_trend_rows}
+
+    articles_rows = (
+        LigneVente.objects.filter(vente__date_vente__date__gte=start_date, vente__date_vente__date__lte=today)
+        .annotate(jour=TruncDate("vente__date_vente"))
+        .values("jour")
+        .annotate(qte=Sum("quantite"))
+        .order_by("jour")
+    )
+    articles_map = {row["jour"]: row["qte"] for row in articles_rows}
+
+    alertes_rows = (
+        Alerte.objects.filter(date__date__gte=start_date, date__date__lte=today)
+        .annotate(jour=TruncDate("date"))
+        .values("jour")
+        .annotate(
+            total=Count("id"),
+            stock=Count("id", filter=Q(type_alerte="stock")),
+        )
+        .order_by("jour")
+    )
+    alertes_map = {row["jour"]: row for row in alertes_rows}
+
+    produits_rows = (
+        Produit.objects.filter(date_ajout__date__gte=start_date, date_ajout__date__lte=today)
+        .annotate(jour=TruncDate("date_ajout"))
+        .values("jour")
+        .annotate(total=Count("id"))
+        .order_by("jour")
+    )
+    produits_map = {row["jour"]: row["total"] for row in produits_rows}
+
+    personnel_rows = (
+        Personnel.objects.filter(date_embauche__gte=start_date, date_embauche__lte=today)
+        .values("date_embauche")
+        .annotate(total=Count("id"))
+        .order_by("date_embauche")
+    )
+    personnel_map = {row["date_embauche"]: row["total"] for row in personnel_rows}
+
+    gain_net_series = []
+    stock_bas_series = []
+    alertes_series = []
+    produits_series = []
+    clients_series = []
+    personnel_series = []
+    ventes_series = []
+    articles_series = []
+    ticket_moyen_series = []
+    commissions_series = []
+
+    for day in days:
+        vente_day = ventes_map.get(day, {})
+        paid_total = Decimal(str(vente_day.get("paid_total") or 0))
+        commission_day = Decimal(str(vente_day.get("commission_total") or 0))
+        paid_count = int(vente_day.get("paid_count") or 0)
+        gain_net_series.append(max(Decimal("0.00"), paid_total - commission_day))
+        stock_bas_series.append(int((alertes_map.get(day) or {}).get("stock") or 0))
+        alertes_series.append(int((alertes_map.get(day) or {}).get("total") or 0))
+        produits_series.append(int(produits_map.get(day) or 0))
+        clients_series.append(int(vente_day.get("clients_count") or 0))
+        personnel_series.append(int(personnel_map.get(day) or 0))
+        ventes_series.append(int(vente_day.get("total_count") or 0))
+        articles_series.append(int(articles_map.get(day) or 0))
+        ticket_moyen_series.append((paid_total / paid_count) if paid_count else Decimal("0.00"))
+        commissions_series.append(commission_day)
+
     return render(request, "boutique/dashboard.html", {
         "produits": produits,
         "ventes": ventes,
@@ -207,6 +307,16 @@ def dashboard(request):
         "ticket_moyen": ticket_moyen,
         "total_commissions": total_commissions,
         "top_produits": top_produits,
+        "spark_gain_net": _series_to_csv(gain_net_series),
+        "spark_stock_bas": _series_to_csv(stock_bas_series),
+        "spark_alertes": _series_to_csv(alertes_series),
+        "spark_produits": _series_to_csv(produits_series),
+        "spark_clients": _series_to_csv(clients_series),
+        "spark_personnel": _series_to_csv(personnel_series),
+        "spark_ventes": _series_to_csv(ventes_series),
+        "spark_articles": _series_to_csv(articles_series),
+        "spark_ticket": _series_to_csv(ticket_moyen_series),
+        "spark_commissions": _series_to_csv(commissions_series),
     })
 
 
@@ -1931,6 +2041,13 @@ def comptabilite(request):
         )
         .order_by("-jour")[:14]
     )
+    flux_chrono = list(reversed(flux_journalier))
+    nb_jours = max((date_to - date_from).days + 1, 1)
+    charge_jour = charges_total / Decimal(str(nb_jours))
+    spark_ca = [row.get("facture") or Decimal("0.00") for row in flux_chrono]
+    spark_encaisse = [row.get("encaisse") or Decimal("0.00") for row in flux_chrono]
+    spark_impaye = [row.get("impaye") or Decimal("0.00") for row in flux_chrono]
+    spark_resultat = [(row.get("encaisse") or Decimal("0.00")) - charge_jour for row in flux_chrono]
 
     recent_ventes = ventes_qs.order_by("-date_vente")[:12]
     recent_paies = paies_qs.order_by("-created_at")[:10]
@@ -1969,6 +2086,10 @@ def comptabilite(request):
         "recent_depenses": recent_depenses,
         "recent_ransons": recent_ransons,
         "personnels_actifs": personnels_actifs,
+        "spark_ca": _series_to_csv(spark_ca),
+        "spark_encaisse": _series_to_csv(spark_encaisse),
+        "spark_impaye": _series_to_csv(spark_impaye),
+        "spark_resultat": _series_to_csv(spark_resultat),
     }
     return render(request, "boutique/comptabilite.html", context)
 
@@ -2020,6 +2141,25 @@ def factures(request):
     total_encaisse_net = total_encaisse - total_commissions
     if total_encaisse_net < 0:
         total_encaisse_net = Decimal("0.00")
+    factures_trend_rows = (
+        ventes_qs.annotate(jour=TruncDate("date_vente"))
+        .values("jour")
+        .annotate(
+            encaisse=Sum("total", filter=Q(statut_paiement="paye")),
+            impaye=Sum("total", filter=Q(statut_paiement="impaye")),
+            commission=Sum("commission", filter=Q(statut_paiement="paye")),
+        )
+        .order_by("jour")
+    )
+    spark_encaisse_net = []
+    spark_impaye = []
+    spark_commission = []
+    for row in factures_trend_rows:
+        encaisse = row.get("encaisse") or Decimal("0.00")
+        commission = row.get("commission") or Decimal("0.00")
+        spark_encaisse_net.append(max(Decimal("0.00"), encaisse - commission))
+        spark_impaye.append(row.get("impaye") or Decimal("0.00"))
+        spark_commission.append(commission)
     resultats_count = ventes_qs.count()
     ventes = ventes_qs[:300]
     clients = Client.objects.order_by("nom")
@@ -2032,6 +2172,9 @@ def factures(request):
         "total_encaisse_net": total_encaisse_net,
         "total_impaye": total_impaye,
         "total_commissions": total_commissions,
+        "spark_factures_net": _series_to_csv(spark_encaisse_net),
+        "spark_factures_impaye": _series_to_csv(spark_impaye),
+        "spark_factures_commissions": _series_to_csv(spark_commission),
         "resultats_count": resultats_count,
         "q": q,
         "client_id": client_id,

@@ -151,21 +151,25 @@
 </div>
 
 <div class="finance-kpi-grid" style="margin-top:14px;">
-  <div class="finance-kpi">
+  <div class="finance-kpi metric-card">
     <div class="label">CA facturé</div>
     <div class="value">{{ ca_total|floatformat:2 }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="neutral" data-chart-points="{{ spark_ca }}"></div>
   </div>
-  <div class="finance-kpi good">
+  <div class="finance-kpi good metric-card">
     <div class="label">Encaissements</div>
     <div class="value">{{ encaisse_total|floatformat:2 }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="good" data-chart-points="{{ spark_encaisse }}"></div>
   </div>
-  <div class="finance-kpi bad">
+  <div class="finance-kpi bad metric-card">
     <div class="label">Impayés</div>
     <div class="value">{{ impaye_total|floatformat:2 }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="bad" data-chart-points="{{ spark_impaye }}"></div>
   </div>
-  <div class="finance-kpi {% if resultat_net >= 0 %}good{% else %}bad{% endif %}">
+  <div class="finance-kpi {% if resultat_net >= 0 %}good{% else %}bad{% endif %} metric-card">
     <div class="label">Résultat net</div>
     <div class="value">{{ resultat_net|floatformat:2 }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="{% if resultat_net >= 0 %}good{% else %}bad{% endif %}" data-chart-points="{{ spark_resultat }}"></div>
   </div>
 </div>
 

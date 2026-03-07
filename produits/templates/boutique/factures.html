@@ -32,19 +32,22 @@
 </div>
 
 <div class="grid grid-3" style="margin-bottom:16px;">
-  <div class="card">
+  <div class="card metric-card">
     <div class="muted">Gain net encaissé</div>
     <div style="font-size:24px; font-weight:700; margin-top:6px;">{{ total_encaisse_net }} FCFA</div>
     <div class="muted">Encaissé brut: {{ total_encaisse }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="good" data-chart-points="{{ spark_factures_net }}"></div>
   </div>
-  <div class="card">
+  <div class="card metric-card">
     <div class="muted">Total impayé</div>
     <div style="font-size:24px; font-weight:700; margin-top:6px;">{{ total_impaye }} FCFA</div>
     <div class="muted">Facturé global: {{ total_factures }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="bad" data-chart-points="{{ spark_factures_impaye }}"></div>
   </div>
-  <div class="card">
+  <div class="card metric-card">
     <div class="muted">Commissions à reverser</div>
     <div style="font-size:24px; font-weight:700; margin-top:6px;">{{ total_commissions }} FCFA</div>
+    <div class="metric-sparkline" data-sparkline data-chart-tone="bad" data-chart-points="{{ spark_factures_commissions }}"></div>
   </div>
 </div>
 

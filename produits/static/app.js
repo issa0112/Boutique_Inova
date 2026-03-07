@@ -99,4 +99,38 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeMobileSidebar();
   });
+
+  const sparkNodes = document.querySelectorAll("[data-sparkline]");
+  sparkNodes.forEach((node) => {
+    const raw = (node.dataset.chartPoints || "")
+      .split(",")
+      .map((v) => parseFloat(v.trim()))
+      .filter((v) => Number.isFinite(v));
+    if (raw.length < 2) return;
+
+    const width = 220;
+    const height = 64;
+    const padX = 8;
+    const padY = 6;
+    const min = Math.min(...raw);
+    const max = Math.max(...raw);
+    const range = max - min || 1;
+    const stepX = (width - padX * 2) / (raw.length - 1);
+    const points = raw.map((value, index) => {
+      const x = padX + index * stepX;
+      const y = padY + (height - padY * 2) * (1 - (value - min) / range);
+      return [x, y];
+    });
+
+    const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(2)} ${p[1].toFixed(2)}`).join(" ");
+    const areaPath = `${linePath} L${points[points.length - 1][0].toFixed(2)} ${(height - padY).toFixed(2)} L${points[0][0].toFixed(2)} ${(height - padY).toFixed(2)} Z`;
+    const tone = node.dataset.chartTone || "neutral";
+
+    node.innerHTML = `
+      <svg class="sparkline sparkline-${tone}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+        <path class="sparkline-area" d="${areaPath}"></path>
+        <path class="sparkline-line" d="${linePath}"></path>
+      </svg>
+    `;
+  });
 });
