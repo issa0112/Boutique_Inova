@@ -5,6 +5,8 @@ from .views import update_produit
 urlpatterns = [
     path("", dashboard, name="dashboard"),
     path("produits/", produits, name="produits"),
+    path("produits/import/", import_produits, name="import_produits"),
+    path("produits/import/modele/", modele_import_produits, name="modele_import_produits"),
     path("stock/", stock, name="stock"),
     path("stock/export/csv/", stock_export_csv, name="stock_export_csv"),
     path("stock/export/pdf/", stock_export_pdf, name="stock_export_pdf"),

@@ -6,7 +6,8 @@ from decimal import Decimal, InvalidOperation
 from datetime import timedelta
 import json
 import csv
-from io import BytesIO
+import unicodedata
+from io import BytesIO, StringIO
 
 import qrcode
 from reportlab.pdfgen import canvas
@@ -94,6 +95,59 @@ def _csv_response(filename, header, rows):
     for row in rows:
         writer.writerow(row)
     return response
+
+
+def _build_product_qr_data(produit):
+    fournisseur_nom = produit.fournisseur.nom if produit.fournisseur else "N/A"
+    categorie_nom = produit.category.nom if produit.category else "N/A"
+    return (
+        f"Produit ID: {produit.id}\n"
+        f"Produit: {produit.nom}\n"
+        f"Prix: {produit.prix} FCFA\n"
+        f"Quantité: {produit.quantite}\n"
+        f"Fournisseur: {fournisseur_nom}\n"
+        f"Catégorie: {categorie_nom}"
+    )
+
+
+def _regenerate_product_qr(produit):
+    qr = qrcode.QRCode(box_size=2, border=1)
+    qr.add_data(_build_product_qr_data(produit))
+    qr.make(fit=True)
+    img = qr.make_image()
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    produit.qr_code.save(f"produit_{produit.id}.png", File(buffer), save=False)
+
+
+def _normalize_csv_header(header):
+    normalized = unicodedata.normalize("NFKD", str(header or ""))
+    without_accents = "".join(c for c in normalized if not unicodedata.combining(c))
+    return without_accents.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def _parse_decimal_value(value, label):
+    raw = str(value or "").replace("\u00a0", "").replace(" ", "").strip()
+    if not raw:
+        raise ValueError(f"'{label}' est vide.")
+    if "," in raw and "." in raw:
+        if raw.rfind(",") > raw.rfind("."):
+            raw = raw.replace(".", "").replace(",", ".")
+        else:
+            raw = raw.replace(",", "")
+    else:
+        raw = raw.replace(",", ".")
+    try:
+        return Decimal(raw)
+    except InvalidOperation as exc:
+        raise ValueError(f"'{label}' invalide ({value}).") from exc
+
+
+def _parse_int_value(value, label):
+    decimal_value = _parse_decimal_value(value, label)
+    if decimal_value != decimal_value.to_integral_value():
+        raise ValueError(f"'{label}' doit être un entier.")
+    return int(decimal_value)
 
 
 def _recalc_panier(panier):
@@ -350,22 +404,8 @@ def produits(request):
                 image=image
             )
 
-            qr_data = (
-                f"Produit ID: {produit.id}\n"
-                f"Produit: {produit.nom}\n"
-                f"Prix: {produit.prix} FCFA\n"
-                f"Quantité: {produit.quantite}\n"
-                f"Fournisseur: {fournisseur.nom if fournisseur else 'N/A'}\n"
-                f"Catégorie: {categorie.nom if categorie else 'N/A'}"
-            )
-            qr = qrcode.QRCode(box_size=2, border=1)
-            qr.add_data(qr_data)
-            qr.make(fit=True)
-            img = qr.make_image()
-            buffer = BytesIO()
-            img.save(buffer, format="PNG")
-            produit.qr_code.save(f"produit_{produit.id}.png", File(buffer), save=False)
-            produit.save()
+            _regenerate_product_qr(produit)
+            produit.save(update_fields=["qr_code"])
 
             _create_stock_movement(
                 produit=produit,
@@ -392,6 +432,208 @@ def produits(request):
         "fournisseurs": fournisseurs,
         "categories": categories
     })
+
+
+def import_produits(request):
+    if request.method != "POST":
+        return redirect("produits")
+
+    fichier = request.FILES.get("fichier_produits")
+    if not fichier:
+        messages.error(request, "Veuillez sélectionner un fichier CSV à importer.")
+        return redirect("produits")
+
+    if not fichier.name.lower().endswith((".csv", ".txt")):
+        messages.error(request, "Format non supporté. Utilisez un fichier CSV.")
+        return redirect("produits")
+
+    try:
+        contenu_bytes = fichier.read()
+        contenu = None
+        for encoding in ("utf-8-sig", "latin-1"):
+            try:
+                contenu = contenu_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if contenu is None:
+            messages.error(request, "Impossible de lire le fichier. Encodage non supporté.")
+            return redirect("produits")
+        if not contenu.strip():
+            messages.error(request, "Le fichier importé est vide.")
+            return redirect("produits")
+
+        try:
+            dialect = csv.Sniffer().sniff(contenu[:4096], delimiters=";,|\t,")
+            reader = csv.DictReader(StringIO(contenu), dialect=dialect)
+        except csv.Error:
+            reader = csv.DictReader(StringIO(contenu), delimiter=";")
+        if not reader.fieldnames:
+            messages.error(request, "En-têtes CSV introuvables.")
+            return redirect("produits")
+
+        aliases = {
+            "nom": "nom",
+            "name": "nom",
+            "produit": "nom",
+            "designation": "nom",
+            "prix": "prix",
+            "price": "prix",
+            "prixunitaire": "prix",
+            "pu": "prix",
+            "quantite": "quantite",
+            "qte": "quantite",
+            "stock": "quantite",
+            "quantity": "quantite",
+            "stockmin": "stock_min",
+            "stockminimum": "stock_min",
+            "seuilstock": "stock_min",
+            "fournisseur": "fournisseur",
+            "supplier": "fournisseur",
+            "categorie": "categorie",
+            "category": "categorie",
+            "cat": "categorie",
+        }
+
+        colonnes = {}
+        for header in reader.fieldnames:
+            key = aliases.get(_normalize_csv_header(header))
+            if key and key not in colonnes:
+                colonnes[key] = header
+
+        obligatoires = ("nom", "prix", "quantite")
+        manquantes = [c for c in obligatoires if c not in colonnes]
+        if manquantes:
+            labels = {
+                "nom": "nom",
+                "prix": "prix",
+                "quantite": "quantite",
+            }
+            champs = ", ".join(labels[c] for c in manquantes)
+            messages.error(request, f"Colonnes obligatoires manquantes: {champs}.")
+            return redirect("produits")
+
+        created_count = 0
+        updated_count = 0
+        skipped_count = 0
+        erreurs = []
+        user = _get_user_or_none(request)
+
+        for line_no, row in enumerate(reader, start=2):
+            if not any((value or "").strip() for value in row.values()):
+                continue
+            try:
+                nom = (row.get(colonnes["nom"]) or "").strip()
+                if not nom:
+                    raise ValueError("Nom manquant.")
+                prix = _parse_decimal_value(row.get(colonnes["prix"]), "prix")
+                quantite = _parse_int_value(row.get(colonnes["quantite"]), "quantite")
+                stock_min = None
+                if "stock_min" in colonnes:
+                    brute_stock_min = row.get(colonnes["stock_min"])
+                    if str(brute_stock_min or "").strip():
+                        stock_min = _parse_int_value(brute_stock_min, "stock_min")
+                    else:
+                        stock_min = 0
+
+                fournisseur = None
+                if "fournisseur" in colonnes:
+                    nom_fournisseur = (row.get(colonnes["fournisseur"]) or "").strip()
+                    if nom_fournisseur:
+                        fournisseur, _ = Fournisseur.objects.get_or_create(
+                            nom=nom_fournisseur,
+                            defaults={"contact": "Non renseigné", "email": None},
+                        )
+
+                categorie = None
+                if "categorie" in colonnes:
+                    nom_categorie = (row.get(colonnes["categorie"]) or "").strip()
+                    if nom_categorie:
+                        categorie, _ = Category.objects.get_or_create(nom=nom_categorie)
+
+                with transaction.atomic():
+                    produit = Produit.objects.filter(nom__iexact=nom).first()
+                    if produit:
+                        stock_avant = produit.quantite
+                        produit.prix = prix
+                        produit.quantite = quantite
+                        champs_updates = ["prix", "quantite"]
+
+                        if stock_min is not None:
+                            produit.stock_min = stock_min
+                            champs_updates.append("stock_min")
+                        if "fournisseur" in colonnes:
+                            produit.fournisseur = fournisseur
+                            champs_updates.append("fournisseur")
+                        if "categorie" in colonnes:
+                            produit.category = categorie
+                            champs_updates.append("category")
+
+                        produit.save(update_fields=champs_updates)
+                        _regenerate_product_qr(produit)
+                        produit.save(update_fields=["qr_code"])
+                        if produit.quantite != stock_avant:
+                            _create_stock_movement(
+                                produit=produit,
+                                type_mouvement="ajustement",
+                                quantite=produit.quantite - stock_avant,
+                                stock_avant=stock_avant,
+                                stock_apres=produit.quantite,
+                                user=user,
+                                note="Import CSV",
+                            )
+                        _ensure_stock_alert(produit)
+                        updated_count += 1
+                    else:
+                        produit = Produit.objects.create(
+                            nom=nom,
+                            prix=prix,
+                            quantite=quantite,
+                            stock_min=stock_min if stock_min is not None else 0,
+                            fournisseur=fournisseur,
+                            category=categorie,
+                        )
+                        _regenerate_product_qr(produit)
+                        produit.save(update_fields=["qr_code"])
+                        _create_stock_movement(
+                            produit=produit,
+                            type_mouvement="entree",
+                            quantite=quantite,
+                            stock_avant=0,
+                            stock_apres=quantite,
+                            user=user,
+                            note="Import CSV",
+                        )
+                        _ensure_stock_alert(produit)
+                        created_count += 1
+            except Exception as e:
+                skipped_count += 1
+                if len(erreurs) < 5:
+                    erreurs.append(f"Ligne {line_no}: {e}")
+
+        if created_count == 0 and updated_count == 0 and skipped_count == 0:
+            messages.warning(request, "Aucune ligne produit exploitable n'a été trouvée dans le fichier.")
+        elif skipped_count:
+            resume = f"Import terminé: {created_count} créé(s), {updated_count} mis à jour, {skipped_count} ignoré(s)."
+            if erreurs:
+                resume = f"{resume} Détails: {' | '.join(erreurs)}"
+            messages.warning(request, resume)
+        else:
+            messages.success(request, f"Import terminé: {created_count} créé(s), {updated_count} mis à jour.")
+
+    except Exception as e:
+        messages.error(request, f"Erreur lors de l'import: {e}")
+
+    return redirect("produits")
+
+
+def modele_import_produits(request):
+    return _csv_response(
+        "modele_import_produits.csv",
+        ["nom", "prix", "quantite", "stock_min", "fournisseur", "categorie"],
+        [["Clavier USB", "15000", "10", "3", "Fournisseur Demo", "Informatique"]],
+    )
 
 
 # -----------------------------
