@@ -296,6 +296,7 @@ body.theme-dark .theme-icon-sun {
 
 .content {
   padding: 0 28px 40px;
+  padding-top: 0 !important;
   min-width: 0;
 }
 
@@ -303,6 +304,7 @@ body.theme-dark .theme-icon-sun {
   font-family: "Sora", sans-serif;
   font-size: 26px;
   margin: 0 0 18px;
+  margin-top: 0 !important;
 }
 
 .card {
