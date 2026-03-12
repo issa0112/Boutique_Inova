@@ -346,12 +346,18 @@ body.theme-dark .card {
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
+  table-layout: fixed;
 }
 
 .table th, .table td {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .table thead th {
@@ -1212,7 +1218,7 @@ body.theme-dark .alert-error {
     width: 100%;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
-    white-space: nowrap;
+    white-space: normal;
     border-collapse: separate;
   }
   .table th,

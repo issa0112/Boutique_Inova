@@ -4,6 +4,8 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from decimal import Decimal, InvalidOperation
 from datetime import timedelta
+import os
+import textwrap
 import json
 import csv
 import unicodedata
@@ -11,13 +13,14 @@ from io import BytesIO, StringIO
 
 import qrcode
 from reportlab.pdfgen import canvas
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
 from django.template.loader import render_to_string
+from django.conf import settings
 from django.contrib import messages
 from django.db import transaction
 from django.db.models import Sum, F, DecimalField, ExpressionWrapper, Q, Count
@@ -246,6 +249,44 @@ def _series_to_csv(values):
     if len(cleaned) == 1:
         cleaned.append(cleaned[0])
     return ",".join(str(v) for v in cleaned)
+
+
+def _fmt_money(value):
+    try:
+        amount = Decimal(str(value or 0))
+    except Exception:
+        amount = Decimal("0.00")
+    raw = f"{amount:,.2f}".replace(",", " ")
+    return f"{raw} FCFA"
+
+
+def _fmt_dt(dt):
+    if not dt:
+        return "-"
+    return timezone.localtime(dt).strftime("%d/%m/%Y %H:%M")
+
+
+def _company_profile():
+    return {
+        "name": os.getenv("COMPANY_NAME", "Boutique INOVA"),
+        "address": os.getenv("COMPANY_ADDRESS", ""),
+        "phone": os.getenv("COMPANY_PHONE", ""),
+        "email": os.getenv("COMPANY_EMAIL", ""),
+        "nif": os.getenv("COMPANY_NIF", ""),
+        "rccm": os.getenv("COMPANY_RCCM", ""),
+    }
+
+
+def _logo_path():
+    static_root = getattr(settings, "STATIC_ROOT", "") or ""
+    candidates = []
+    if static_root:
+        candidates.append(os.path.join(static_root, "images", "logodounya.png"))
+    candidates.append(os.path.join(settings.BASE_DIR, "produits", "static", "images", "logodounya.png"))
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return ""
 
 
 # -----------------------------
@@ -1279,38 +1320,127 @@ def facture_pdf(request, vente_id):
     vente = get_object_or_404(Vente, id=vente_id)
     response = HttpResponse(content_type="application/pdf")
     response['Content-Disposition'] = f'attachment; filename="facture_{vente.id}.pdf"'
-    doc = SimpleDocTemplate(response, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+    doc = SimpleDocTemplate(
+        response,
+        pagesize=A4,
+        rightMargin=18*mm,
+        leftMargin=18*mm,
+        topMargin=16*mm,
+        bottomMargin=16*mm,
+    )
     elements = []
     styles = getSampleStyleSheet()
+    company = _company_profile()
+    logo_path = _logo_path()
 
-    elements.append(Paragraph("<b>Boutique INOVA</b>", styles["Title"]))
-    elements.append(Paragraph(f"Facture N° {vente.id}", styles["Normal"]))
-    elements.append(Paragraph(f"Date : {vente.date_vente.strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
-    statut_label = "IMPAYE" if vente.statut_paiement == "impaye" else "PAYE"
-    statut_color = "red" if vente.statut_paiement == "impaye" else "green"
-    elements.append(Paragraph(f'Statut paiement : <font color="{statut_color}"><b>{statut_label}</b></font>', styles["Normal"]))
+    title_style = styles["Title"]
+    title_style.fontSize = 18
+    title_style.leading = 22
+
+    header_left = []
+    if logo_path:
+        header_left.append(RLImage(logo_path, width=28*mm, height=28*mm))
+    header_left.append(Paragraph(f"<b>{company['name']}</b>", styles["Heading2"]))
+    if company["address"]:
+        header_left.append(Paragraph(company["address"], styles["Normal"]))
+    contact_bits = [v for v in [company["phone"], company["email"]] if v]
+    if contact_bits:
+        header_left.append(Paragraph(" • ".join(contact_bits), styles["Normal"]))
+    reg_bits = [v for v in [company["nif"], company["rccm"]] if v]
+    if reg_bits:
+        header_left.append(Paragraph("NIF/RCCM: " + " • ".join(reg_bits), styles["Normal"]))
+
+    statut_label = "IMPAYÉ" if vente.statut_paiement == "impaye" else "PAYÉ"
+    statut_color = "#b91c1c" if vente.statut_paiement == "impaye" else "#15803d"
+
+    header_right = [
+        Paragraph("<b>FACTURE</b>", title_style),
+        Paragraph(f"N° {vente.id}", styles["Heading3"]),
+        Paragraph(f"Date: {_fmt_dt(vente.date_vente)}", styles["Normal"]),
+        Paragraph(
+            f"Statut: <font color='{statut_color}'><b>{statut_label}</b></font>",
+            styles["Normal"],
+        ),
+    ]
     if vente.mode_paiement:
-        elements.append(Paragraph(f"Mode paiement : {vente.get_mode_paiement_display()}", styles["Normal"]))
+        header_right.append(Paragraph(f"Paiement: {vente.get_mode_paiement_display()}", styles["Normal"]))
     if vente.mode_paiement == "transaction_bancaire" and vente.paiement_info_cle:
-        elements.append(Paragraph(f"Info clé : {vente.paiement_info_cle}", styles["Normal"]))
-    elements.append(Spacer(1,12))
+        header_right.append(Paragraph(f"Réf: {vente.paiement_info_cle}", styles["Normal"]))
 
-    data = [["Produit","Quantité","Prix Unitaire","Sous-total"]]
-    for ligne in vente.lignes.all():
-        data.append([ligne.produit.nom, str(ligne.quantite), f"{ligne.prix_unitaire} FCFA", f"{ligne.quantite * ligne.prix_unitaire} FCFA"])
-    data.append(["","","<b>TOTAL</b>", f"<b>{vente.total} FCFA</b>"])
+    header_table = Table(
+        [[header_left, header_right]],
+        colWidths=[110*mm, 70*mm],
+        hAlign="LEFT",
+    )
+    header_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 8))
 
-    table = Table(data, colWidths=[80*mm,30*mm,40*mm,40*mm])
+    client_lines = []
+    if vente.client:
+        client_lines.append(f"<b>Client:</b> {vente.client.nom}")
+        if vente.client.telephone and vente.client.telephone != "00000000":
+            client_lines.append(f"Tél: {vente.client.telephone}")
+        if vente.client.email:
+            client_lines.append(f"Email: {vente.client.email}")
+    if vente.user:
+        client_lines.append(f"<b>Caissier:</b> {vente.user.username}")
+    if client_lines:
+        elements.append(Paragraph(" • ".join(client_lines), styles["Normal"]))
+        elements.append(Spacer(1, 6))
+
+    data = [["Produit", "Qté", "Prix U.", "Remise", "Total"]]
+    lignes = vente.lignes.select_related("produit").all()
+    for ligne in lignes:
+        produit_nom = ligne.produit.nom if ligne.produit else "Produit supprimé"
+        remise_label = "-"
+        if ligne.remise_value and ligne.remise_value > 0:
+            if ligne.remise_type == "percent":
+                remise_label = f"{ligne.remise_value}%"
+            elif ligne.remise_type == "amount":
+                remise_label = _fmt_money(ligne.remise_value)
+        total_ligne = ligne.total_ligne if ligne.total_ligne else (ligne.quantite * ligne.prix_unitaire)
+        data.append([
+            produit_nom,
+            str(ligne.quantite),
+            _fmt_money(ligne.prix_unitaire),
+            remise_label,
+            _fmt_money(total_ligne),
+        ])
+
+    table = Table(data, colWidths=[75*mm, 15*mm, 28*mm, 28*mm, 28*mm], repeatRows=1)
     table.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,0),colors.grey),
-        ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
-        ("ALIGN",(1,1),(-1,-1),"CENTER"),
-        ("GRID",(0,0),(-1,-1),0.5,colors.black),
-        ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
-        ("BACKGROUND",(-2,-1),(-1,-1),colors.lightgrey)
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd5f5")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     elements.append(table)
-    elements.append(Spacer(1,20))
+    elements.append(Spacer(1, 8))
+
+    totals_data = []
+    if vente.total_before_discount:
+        totals_data.append(["Sous-total", _fmt_money(vente.total_before_discount)])
+    if vente.total_discount:
+        totals_data.append(["Remises", _fmt_money(vente.total_discount)])
+    if vente.coupon_discount:
+        totals_data.append([f"Coupon ({vente.coupon_code or '-'})", _fmt_money(vente.coupon_discount)])
+    totals_data.append(["Total à payer", _fmt_money(vente.total)])
+
+    totals_table = Table(totals_data, colWidths=[55*mm, 35*mm], hAlign="RIGHT")
+    totals_table.setStyle(TableStyle([
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("LINEABOVE", (0, -1), (-1, -1), 0.6, colors.black),
+    ]))
+    elements.append(totals_table)
+    elements.append(Spacer(1, 12))
     elements.append(Paragraph("Merci pour votre achat !", styles["Italic"]))
     doc.build(elements)
     return response
@@ -1323,19 +1453,26 @@ def facture_pdf(request, vente_id):
 def ticket_caisse_pdf(request, vente_id):
     vente = get_object_or_404(Vente, id=vente_id)
     largeur_pt = 80 * 2.83465
-    hauteur_pt = 300
+    lignes_count = vente.lignes.count()
+    base_height = 220
+    line_height = 12
+    hauteur_pt = max(320, base_height + (lignes_count * line_height))
     response = HttpResponse(content_type="application/pdf")
     response['Content-Disposition'] = f'attachment; filename="ticket_{vente.id}.pdf"'
     c = canvas.Canvas(response, pagesize=(largeur_pt, hauteur_pt))
-    y = hauteur_pt - 10
+    y = hauteur_pt - 18
+    company = _company_profile()
 
     c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(largeur_pt/2, y, "BOUTIQUE INOVA")
+    c.drawCentredString(largeur_pt/2, y, company["name"].upper())
     y -= 15
     c.setFont("Helvetica", 8)
+    if company["phone"]:
+        c.drawCentredString(largeur_pt/2, y, company["phone"])
+        y -= 10
     c.drawCentredString(largeur_pt/2, y, f"Facture N° {vente.id}")
     y -= 12
-    c.drawCentredString(largeur_pt/2, y, f"Date : {vente.date_vente.strftime('%d/%m/%Y %H:%M')}")
+    c.drawCentredString(largeur_pt/2, y, f"Date : {_fmt_dt(vente.date_vente)}")
     y -= 15
     c.setFont("Helvetica-Bold", 8)
     c.drawCentredString(largeur_pt/2, y, f"Statut: {'IMPAYE' if vente.statut_paiement == 'impaye' else 'PAYE'}")
@@ -1344,27 +1481,49 @@ def ticket_caisse_pdf(request, vente_id):
         c.setFont("Helvetica", 7)
         c.drawCentredString(largeur_pt/2, y, f"Paiement: {vente.get_mode_paiement_display()}")
         y -= 10
+    y -= 2
     c.line(5, y, largeur_pt-5, y)
-    y -= 10
-    c.setFont("Helvetica-Bold", 8)
+    y -= 12
+    c.setFont("Helvetica-Bold", 7.5)
     c.drawString(5, y, "Produit")
     c.drawRightString(largeur_pt-5, y, "Total")
-    y -= 10
+    y -= 8
     c.line(5, y, largeur_pt-5, y)
-    y -= 5
-    c.setFont("Helvetica", 8)
+    y -= 6
+    c.setFont("Helvetica", 7.5)
+    y -= 2
     for ligne in vente.lignes.all():
-        nom = ligne.produit.nom[:15]
-        sous_total = ligne.quantite * ligne.prix_unitaire
-        c.drawString(5, y, f"{nom} x{ligne.quantite}")
-        c.drawRightString(largeur_pt-5, y, f"{sous_total} FCFA")
-        y -= 10
-    y -= 5
+        nom = ligne.produit.nom if ligne.produit else "Produit supprimé"
+        total_ligne = ligne.total_ligne if ligne.total_ligne else (ligne.quantite * ligne.prix_unitaire)
+        wrapped = textwrap.wrap(nom, width=18) or [nom]
+        for i, chunk in enumerate(wrapped):
+            if i == 0:
+                c.drawString(5, y, f"{chunk} x{ligne.quantite}")
+                c.drawRightString(largeur_pt-5, y, _fmt_money(total_ligne))
+            else:
+                y -= 9
+                c.drawString(5, y, chunk)
+            y -= 11
+    y -= 2
     c.line(5, y, largeur_pt-5, y)
-    y -= 10
+    y -= 12
+    c.setFont("Helvetica-Bold", 9)
+    if vente.total_before_discount:
+        c.setFont("Helvetica", 7.5)
+        c.drawString(5, y, "Sous-total")
+        c.drawRightString(largeur_pt-5, y, _fmt_money(vente.total_before_discount))
+        y -= 11
+    if vente.total_discount:
+        c.drawString(5, y, "Remises")
+        c.drawRightString(largeur_pt-5, y, _fmt_money(vente.total_discount))
+        y -= 11
+    if vente.coupon_discount:
+        c.drawString(5, y, "Coupon")
+        c.drawRightString(largeur_pt-5, y, _fmt_money(vente.coupon_discount))
+        y -= 11
     c.setFont("Helvetica-Bold", 9)
     c.drawString(5, y, "TOTAL")
-    c.drawRightString(largeur_pt-5, y, f"{vente.total} FCFA")
+    c.drawRightString(largeur_pt-5, y, _fmt_money(vente.total))
     y -= 20
     c.setFont("Helvetica-Oblique", 7)
     c.drawCentredString(largeur_pt/2, y, "Merci pour votre achat !")
