@@ -1,4 +1,5 @@
 ﻿from io import BytesIO
+import os
 
 import qrcode
 from django.contrib import messages
@@ -27,6 +28,14 @@ def _audit_commande(commande, action, espace, acteur=None, details=""):
         details=details or "",
     )
 
+
+
+def _pdf_response(filename):
+    response = HttpResponse(content_type="application/pdf")
+    inline_mode = os.getenv("DESKTOP_PDF_INLINE", "0").lower() in ("1", "true", "yes", "on")
+    if not inline_mode:
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
 
 def _build_bordereau_pdf_bytes(commande):
     buffer = BytesIO()
@@ -243,8 +252,7 @@ def audit_export_csv(request):
 
 def audit_export_pdf(request):
     audits = CommandeInterneAudit.objects.select_related("commande", "acteur")[:300]
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = 'attachment; filename="audit_commandes_internes.pdf"'
+    response = _pdf_response("audit_commandes_internes.pdf")
     doc = SimpleDocTemplate(
         response,
         pagesize=A4,
@@ -282,4 +290,7 @@ def audit_export_pdf(request):
     elements.append(table)
     doc.build(elements)
     return response
+
+
+
 

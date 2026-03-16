@@ -10,6 +10,7 @@ import json
 import csv
 import unicodedata
 from io import BytesIO, StringIO
+from xml.sax.saxutils import escape as _xml_escape
 
 import qrcode
 from reportlab.pdfgen import canvas
@@ -276,6 +277,11 @@ def _company_profile():
         "rccm": os.getenv("COMPANY_RCCM", ""),
     }
 
+def _pdf_escape(value):
+    if value is None:
+        return ""
+    return _xml_escape(str(value), {"'": "&apos;", '"': "&quot;"})
+
 
 def _logo_path():
     static_root = getattr(settings, "STATIC_ROOT", "") or ""
@@ -287,6 +293,14 @@ def _logo_path():
         if path and os.path.exists(path):
             return path
     return ""
+
+
+def _pdf_response(filename):
+    response = HttpResponse(content_type="application/pdf")
+    inline_mode = os.getenv("DESKTOP_PDF_INLINE", "0").lower() in ("1", "true", "yes", "on")
+    if not inline_mode:
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
 
 
 # -----------------------------
@@ -1318,8 +1332,7 @@ def update_prix_panier_proforma(request):
 
 def facture_pdf(request, vente_id):
     vente = get_object_or_404(Vente, id=vente_id)
-    response = HttpResponse(content_type="application/pdf")
-    response['Content-Disposition'] = f'attachment; filename="facture_{vente.id}.pdf"'
+    response = _pdf_response(f"facture_{vente.id}.pdf")
     doc = SimpleDocTemplate(
         response,
         pagesize=A4,
@@ -1340,15 +1353,15 @@ def facture_pdf(request, vente_id):
     header_left = []
     if logo_path:
         header_left.append(RLImage(logo_path, width=28*mm, height=28*mm))
-    header_left.append(Paragraph(f"<b>{company['name']}</b>", styles["Heading2"]))
+    header_left.append(Paragraph(f"<b>{_pdf_escape(company['name'])}</b>", styles["Heading2"]))
     if company["address"]:
-        header_left.append(Paragraph(company["address"], styles["Normal"]))
+        header_left.append(Paragraph(_pdf_escape(company["address"]), styles["Normal"]))
     contact_bits = [v for v in [company["phone"], company["email"]] if v]
     if contact_bits:
-        header_left.append(Paragraph(" • ".join(contact_bits), styles["Normal"]))
+        header_left.append(Paragraph(_pdf_escape(" • ".join(contact_bits)), styles["Normal"]))
     reg_bits = [v for v in [company["nif"], company["rccm"]] if v]
     if reg_bits:
-        header_left.append(Paragraph("NIF/RCCM: " + " • ".join(reg_bits), styles["Normal"]))
+        header_left.append(Paragraph("NIF/RCCM: " + _pdf_escape(" • ".join(reg_bits)), styles["Normal"]))
 
     statut_label = "IMPAYÉ" if vente.statut_paiement == "impaye" else "PAYÉ"
     statut_color = "#b91c1c" if vente.statut_paiement == "impaye" else "#15803d"
@@ -1363,9 +1376,9 @@ def facture_pdf(request, vente_id):
         ),
     ]
     if vente.mode_paiement:
-        header_right.append(Paragraph(f"Paiement: {vente.get_mode_paiement_display()}", styles["Normal"]))
+        header_right.append(Paragraph(f"Paiement: {_pdf_escape(vente.get_mode_paiement_display())}", styles["Normal"]))
     if vente.mode_paiement == "transaction_bancaire" and vente.paiement_info_cle:
-        header_right.append(Paragraph(f"Réf: {vente.paiement_info_cle}", styles["Normal"]))
+        header_right.append(Paragraph(f"Réf: {_pdf_escape(vente.paiement_info_cle)}", styles["Normal"]))
 
     header_table = Table(
         [[header_left, header_right]],
@@ -1381,13 +1394,13 @@ def facture_pdf(request, vente_id):
 
     client_lines = []
     if vente.client:
-        client_lines.append(f"<b>Client:</b> {vente.client.nom}")
+        client_lines.append(f"<b>Client:</b> {_pdf_escape(vente.client.nom)}")
         if vente.client.telephone and vente.client.telephone != "00000000":
-            client_lines.append(f"Tél: {vente.client.telephone}")
+            client_lines.append(f"Tél: {_pdf_escape(vente.client.telephone)}")
         if vente.client.email:
-            client_lines.append(f"Email: {vente.client.email}")
+            client_lines.append(f"Email: {_pdf_escape(vente.client.email)}")
     if vente.user:
-        client_lines.append(f"<b>Caissier:</b> {vente.user.username}")
+        client_lines.append(f"<b>Caissier:</b> {_pdf_escape(vente.user.username)}")
     if client_lines:
         elements.append(Paragraph(" • ".join(client_lines), styles["Normal"]))
         elements.append(Spacer(1, 6))
@@ -1457,8 +1470,7 @@ def ticket_caisse_pdf(request, vente_id):
     base_height = 220
     line_height = 12
     hauteur_pt = max(320, base_height + (lignes_count * line_height))
-    response = HttpResponse(content_type="application/pdf")
-    response['Content-Disposition'] = f'attachment; filename="ticket_{vente.id}.pdf"'
+    response = _pdf_response(f"ticket_{vente.id}.pdf")
     c = canvas.Canvas(response, pagesize=(largeur_pt, hauteur_pt))
     y = hauteur_pt - 18
     company = _company_profile()
@@ -1695,8 +1707,7 @@ def inventaire_export_pdf(request):
     if date_to:
         mouvements = mouvements.filter(created_at__date__lte=date_to)
 
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = 'attachment; filename="inventaire.pdf"'
+    response = _pdf_response("inventaire.pdf")
     doc = SimpleDocTemplate(response, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
     styles = getSampleStyleSheet()
@@ -1900,8 +1911,7 @@ def stock_export_csv(request):
 
 
 def stock_export_pdf(request):
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = 'attachment; filename="stock.pdf"'
+    response = _pdf_response("stock.pdf")
     doc = SimpleDocTemplate(response, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
     styles = getSampleStyleSheet()
@@ -1990,8 +2000,7 @@ def personnel_export_csv(request):
 
 
 def personnel_export_pdf(request):
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = 'attachment; filename="personnel.pdf"'
+    response = _pdf_response("personnel.pdf")
     doc = SimpleDocTemplate(response, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
     styles = getSampleStyleSheet()
@@ -2181,8 +2190,7 @@ def salaires_export_csv(request):
 
 
 def salaires_export_pdf(request):
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = 'attachment; filename="salaires.pdf"'
+    response = _pdf_response("salaires.pdf")
     doc = SimpleDocTemplate(response, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
     styles = getSampleStyleSheet()
@@ -2835,8 +2843,7 @@ def bon_commandes(request):
 
 def bon_commande_pdf(request, bon_id):
     bon = get_object_or_404(BonCommande, id=bon_id)
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="bon_commande_{bon.id}.pdf"'
+    response = _pdf_response(f"bon_commande_{bon.id}.pdf")
     doc = SimpleDocTemplate(response, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
     styles = getSampleStyleSheet()
@@ -3013,8 +3020,7 @@ def proformas(request):
 
 def proforma_pdf(request, proforma_id):
     proforma = get_object_or_404(FactureProforma, id=proforma_id)
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="proforma_{proforma.id}.pdf"'
+    response = _pdf_response(f"proforma_{proforma.id}.pdf")
     doc = SimpleDocTemplate(response, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
     styles = getSampleStyleSheet()
@@ -3070,8 +3076,7 @@ def proforma_pdf(request, proforma_id):
 
 def proforma_ticket_a4_pdf(request, proforma_id):
     proforma = get_object_or_404(FactureProforma, id=proforma_id)
-    response = HttpResponse(content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="ticket_proforma_a4_{proforma.id}.pdf"'
+    response = _pdf_response(f"ticket_proforma_a4_{proforma.id}.pdf")
     doc = SimpleDocTemplate(response, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
     elements = []
     styles = getSampleStyleSheet()
